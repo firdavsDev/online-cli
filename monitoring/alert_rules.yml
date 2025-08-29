@@ -1,0 +1,39 @@
+# monitoring/alert_rules.yml
+groups:
+  - name: online-cli-alerts
+    rules:
+      - alert: TunnelServerDown
+        expr: up{job="tunnel-servers"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Tunnel server {{ $labels.instance }} is down"
+          description: "Tunnel server {{ $labels.instance }} has been down for more than 1 minute"
+
+      - alert: HighErrorRate
+        expr: rate(tunnel_requests_failed_total[5m]) / rate(tunnel_requests_total[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High error rate on {{ $labels.instance }}"
+          description: "Error rate is {{ $value | humanizePercentage }} on {{ $labels.instance }}"
+
+      - alert: HighMemoryUsage
+        expr: (node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / node_memory_MemTotal_bytes > 0.85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High memory usage on {{ $labels.instance }}"
+          description: "Memory usage is above 85% on {{ $labels.instance }}"
+
+      - alert: DatabaseConnectionPoolExhausted
+        expr: postgres_connection_pool_active >= postgres_connection_pool_max * 0.9
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Database connection pool nearly exhausted"
+          description: "Connection pool usage is at {{ $value }} connections"

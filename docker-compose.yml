@@ -1,0 +1,198 @@
+
+services:
+
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: online_cli
+      POSTGRES_USER: online_user
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-secure_password}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5432:5432"
+    networks:
+      - online_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U online_user"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Redis for session management and caching
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    networks:
+      - online_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Main tunneling server (multiple instances for load balancing)
+  tunnel-server-1:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    environment:
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=online_cli
+      - DB_USER=online_user
+      - DB_PASSWORD=${DB_PASSWORD:-secure_password}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - SERVER_ID=server-1
+      - WS_PORT=8765
+      - PUBLIC_PORT_START=5000
+      - PUBLIC_PORT_END=5199
+    volumes:
+      - ./logs:/app/logs
+    ports:
+      - "8765:8765"
+      - "5000-5199:5000-5199"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - online_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8765/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  tunnel-server-2:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    environment:
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=online_cli
+      - DB_USER=online_user
+      - DB_PASSWORD=${DB_PASSWORD:-secure_password}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - SERVER_ID=server-2
+      - WS_PORT=8766
+      - PUBLIC_PORT_START=5200
+      - PUBLIC_PORT_END=5399
+    volumes:
+      - ./logs:/app/logs
+    ports:
+      - "8766:8766"
+      - "5200-5399:5200-5399"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - online_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8766/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Nginx Load Balancer and Reverse Proxy
+  nginx:
+    build:
+      context: .
+      dockerfile: Dockerfile.nginx
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8080:8080"  # Admin dashboard
+    volumes:
+      - ./nginx/conf.d:/etc/nginx/conf.d
+      - ./nginx/ssl:/etc/nginx/ssl
+      - ./logs/nginx:/var/log/nginx
+    depends_on:
+      - tunnel-server-1
+      - tunnel-server-2
+      - dashboard
+    networks:
+      - online_network
+    restart: unless-stopped
+
+  # Dashboard and API Gateway
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile.dashboard
+    environment:
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=online_cli
+      - DB_USER=online_user
+      - DB_PASSWORD=${DB_PASSWORD:-secure_password}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - JWT_SECRET=${JWT_SECRET:-your-jwt-secret}
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - online_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Monitoring with Prometheus
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    networks:
+      - online_network
+    restart: unless-stopped
+
+  # Grafana for visualization
+  grafana:
+    image: grafana/grafana:latest
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards
+      - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources
+    ports:
+      - "3001:3000"
+    networks:
+      - online_network
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+  prometheus_data:
+  grafana_data:
+
+networks:
+  online_network:
+    driver: bridge
